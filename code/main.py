@@ -2,7 +2,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 from scipy import sparse
 from scipy.fftpack import dct
-from scipy.optimize import least_squares
+from sklearn import linear_model
 from scipy.ndimage.interpolation import zoom
 
 # All based on work from http://www.scielo.org.co/pdf/iei/v34n3/v34n3a09.pdf
@@ -11,7 +11,7 @@ N0 = 1160
 M0 = 320
 L0 = 360
 
-zfactor = 0.25
+zfactor = 0.125
 
 N = int(N0*zfactor)
 M = int(M0*zfactor)
@@ -71,21 +71,6 @@ def genDecimationMatrix(N,M,L,Delta):
 	D = sparse.csr_matrix((data,(r,c)),shape=(N*(M+L-1)/Delta**2,N*(M+L-1)))
 	return D
 
-def dct3(x):
-	X = dct(dct(dct(x).transpose(0,2,1)).transpose(1,2,0)).transpose(1,2,0).transpose(0,2,1)
-	return X
-
-def idct3(X):
-	x = dct(dct(dct(X).transpose(1,2,0)).transpose(0,2,1)).transpose(0,2,1).transpose(1,2,0)
-	return x
-
-def fun(f,g,tau,N,M,L,H,D):
-	f3d = np.reshape(f,(N,M,L))
-	theta3d = dct3(f3d)
-	theta = np.reshape(theta3d,(N*M*L,1))
-	res = np.linalg.norm((g-D.dot(H.dot(f))),2) + tau*np.linalg.norm(theta,1)
-	return res
-
 data = readData(impath,N0,M0,L0,zfactor)
 
 T1 = genMask1Matrix(N,M,L)
@@ -94,19 +79,16 @@ P = genDispMatrix(N,M,L)
 D = genDecimationMatrix(N,M,L,Delta)
 H = T2.dot(P.dot(T1))
 
-
-
 f_img = np.reshape(data,(N*M*L,1))
 
-g = D.dot(H.dot(f_img))
-
+X = D.dot(H)
+y = X.dot(f_img)
 f0 = np.zeros((N*M*L,))
 
-result = least_squares(lambda f: fun(f,g,0.01,N,M,L,H,D),f0)
+clf = linear_model.Lasso(alpha = 0.1)
+clf.fit(X,y)
 
-theta = result.x
-
-f_v = idct3(theta)
+f_v = clf.coef_
 f = np.reshape(f_v,(N,M,L))
 
 img = np.log(f.mean(axis=2))
