@@ -2,7 +2,10 @@ import numpy as np
 from matplotlib import pyplot as plt
 from scipy import sparse
 from scipy.fftpack import dct
+from scipy.fftpack import idct
 from scipy.sparse import linalg
+from sklearn.linear_model import Lasso
+from NESTA import NESTA
 from scipy.ndimage.interpolation import zoom
 
 # All based on work from http://www.scielo.org.co/pdf/iei/v34n3/v34n3a09.pdf
@@ -11,14 +14,15 @@ N0 = 1160
 M0 = 320
 L0 = 360
 
-zfactor = 0.25
-offset = 1
+zfactor = 0.125
+offset = 4
+Nmax = 1024
 
-N = int(N0*zfactor)
+N = int(Nmax*zfactor)
 M = int(M0*zfactor)
 L = int(L0*zfactor - offset)
 
-Delta = 2
+Delta = 4
 
 np.random.seed(0)
 
@@ -26,11 +30,11 @@ imdir = "../images/DeepHorizon_OilSpill/"
 imname = "0612-1615_rad_sub.dat"
 impath = imdir + imname
 
-def readData(fname,N0,M0,L0,zfactor):
+def readData(fname,N0,M0,L0,zfactor,offset,Nmax):
 	data = np.fromfile(fname,dtype=np.int16)
 	data = np.reshape(data,(N0,L0,M0))
 	data = np.swapaxes(data,1,2)
-	data = zoom(data,zfactor)
+	data = zoom(data[0:Nmax,:,:],zfactor)
 	return data[:,:,:-offset]
 
 def genMask1Matrix(N,M,L):
@@ -41,19 +45,19 @@ def genMask1Matrix(N,M,L):
 	T = sparse.csr_matrix((data,(r,c)),shape=(N*M*L,N*M*L))
 	return T
 
-# def genMask2Matrix(N,M,L):
-# 	data = np.round(np.random.rand(N*(M+L-1),))
-# 	r = np.arange(N*(M+L-1))
-# 	c = np.arange(N*(M+L-1))
-# 	T = sparse.csr_matrix((data,(r,c)),shape=(N*(M+L-1),N*(M+L-1)))
-# 	return T
-
 def genMask2Matrix(N,M,L):
-	data = np.ones((N*(M+L-1),))
+	data = np.round(np.random.rand(N*(M+L-1),))
 	r = np.arange(N*(M+L-1))
 	c = np.arange(N*(M+L-1))
 	T = sparse.csr_matrix((data,(r,c)),shape=(N*(M+L-1),N*(M+L-1)))
 	return T
+
+# def genMask2Matrix(N,M,L):
+# 	data = np.ones((N*(M+L-1),))
+# 	r = np.arange(N*(M+L-1))
+# 	c = np.arange(N*(M+L-1))
+# 	T = sparse.csr_matrix((data,(r,c)),shape=(N*(M+L-1),N*(M+L-1)))
+# 	return T
 
 def genDispMatrix(N,M,L):
 	data = np.ones((N*M*L,))
@@ -81,13 +85,13 @@ def genDecimationMatrix(N,M,L,Delta):
 
 def dct3(x,N,M,L):
 	x = np.reshape(x,(N,M,L))
-	X = dct(dct(dct(x).transpose(0,2,1)).transpose(1,2,0)).transpose(1,2,0).transpose(0,2,1)
+	X = dct(dct(dct(x).transpose(0,2,1)).transpose(1,2,0)).transpose(2,0,1).transpose(0,2,1)
 	X = np.reshape(X,(N*M*L,))
 	return X
 
 def idct3(X,N,M,L):
 	X = np.reshape(X,(N,M,L))
-	x = dct(dct(dct(X).transpose(1,2,0)).transpose(0,2,1)).transpose(0,2,1).transpose(1,2,0)
+	x = idct(idct(idct(X).transpose(0,2,1)).transpose(1,2,0)).transpose(2,0,1).transpose(0,2,1)
 	x = np.reshape(x,(N*M*L,))
 	return x
 
@@ -102,34 +106,66 @@ def A_backward(g,X,N,M,L):
 	theta = dct3(f,N,M,L)
 	return theta
 
-data = readData(impath,N0,M0,L0,zfactor)
+
+# data = readData(impath,N0,M0,L0,zfactor,offset,Nmax)
+
+N = 16
+M = 16
+L = 7
+Delta = 2
+
+l1 = np.ones((N,M))
+
+data = np.stack((l1,2*l1,3*l1,l1,0.5*l1,l1,0.5*l1),axis=2)
 
 T1 = genMask1Matrix(N,M,L)
 T2 = genMask2Matrix(N,M,L)
 P = genDispMatrix(N,M,L)
-# D = genDecimationMatrix(N,M,L,Delta)
+D = genDecimationMatrix(N,M,L,Delta)
 H = T2.dot(P.dot(T1))
 
-f_img = np.reshape(data,(N*M*L,1))
+f_img = np.reshape(data,(N*M*L,))
 
-X = H
-A = linalg.LinearOperator(X.shape,matvec = lambda theta: A_forward(theta,X,N,M,L),rmatvec = lambda g: A_backward(g,X,N,M,L))
+X = D.dot(H)
+X = P.dot(T1)
+# X = H
+# X = P.dot(T1)
+Af = lambda theta: A_forward(theta,X,N,M,L)
+Ab = lambda g: A_backward(g,X,N,M,L)
+A = X
+# A = linalg.LinearOperator(X.shape,matvec = Af,rmatvec = Ab)
 theta0 = dct3(f_img,N,M,L)
-g = A.dot(theta0)
+g = Af(theta0)
+
+# print((int(N/Delta),int((M+L-1)/Delta)))
+# print(g.size)
 
 # im = np.reshape(g,(int(N/Delta),int((M+L-1)/Delta)))
-im = np.reshape(g,(N,(M+L-1)))
+im = np.reshape(g,((M+L-1),N))
+im = im.swapaxes(0,1)
 
-result = linalg.lsqr(A,g,damp=0.1,show=1,iter_lim=500)
+# U = lambda x: dct3(x,N,M,L)
+# Ut = lambda X: idct3(X,N,M,L)
 
-theta = result[0]
+opts = {'U':sparse.identity(N*M*L),'normU':1}
+
+muf = 1e-8
+sigma = 0.001
+delta = np.sqrt(g.size + 2*np.sqrt(2*g.size))*sigma
+delta = 1e-8
+theta,niter,residuals,outputData = NESTA(A=Af,At=Ab,b=g,muf=muf,delta=delta,opts = opts)
+
+# result = linalg.lsqr(A,g,damp=0.1,show=1,iter_lim=50)
+
+# theta = result[0]
 
 f_v = idct3(theta,N,M,L)
 f = np.reshape(f_v,(N,M,L))
 
-img = im.mean(axis=2)
+# img = im.mean(axis=2)
 
-plt.imshow(img,cmap='Greys_r')
+plt.imshow(f.mean(axis=2),cmap='Greys_r')
 plt.show()
-plt.imshow(data.mean(axis=2),cmap='Greys_r')
+
+plt.imshow(im,cmap='Greys_r')
 plt.show()
